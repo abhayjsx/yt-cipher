@@ -1,6 +1,34 @@
-import { type ESTree } from "npm:meriyah";
+import { type ESTree } from "meriyah";
 import { matchesStructure } from "../../utils.ts";
 import { type DeepPartial } from "../../types.ts";
+
+const nsigExpression: DeepPartial<ESTree.Statement> = {
+  type: "VariableDeclaration",
+  kind: "var",
+  declarations: [
+    {
+      type: "VariableDeclarator",
+      init: {
+        type: "CallExpression",
+        callee: {
+          type: "Identifier",
+        },
+        arguments: [
+          {
+            type: "Literal",
+          },
+          {
+            type: "CallExpression",
+            callee: {
+              type: "Identifier",
+              name: "decodeURIComponent",
+            },
+          },
+        ],
+      },
+    },
+  ],
+};
 
 const logicalExpression: DeepPartial<ESTree.ExpressionStatement> = {
   type: "ExpressionStatement",
@@ -105,42 +133,75 @@ export function extract(
   if (!matchesStructure(node, identifier)) {
     return null;
   }
-  let block: ESTree.BlockStatement | undefined | null;
-  if (node.type === "ExpressionStatement" &&
+  
+  // Helper function to check a block and extract signature if pattern matches
+  const checkBlock = (block: ESTree.BlockStatement): ESTree.CallExpression | null => {
+    const relevantExpression = block.body.at(-2);
+    
+    let call: ESTree.CallExpression | null = null;
+    if (matchesStructure(relevantExpression!, logicalExpression)) {
+      if (
+        relevantExpression?.type !== "ExpressionStatement" ||
+        relevantExpression.expression.type !== "LogicalExpression" ||
+        relevantExpression.expression.right.type !== "SequenceExpression" ||
+        relevantExpression.expression.right.expressions[0].type !==
+          "AssignmentExpression" ||
+        relevantExpression.expression.right.expressions[0].right.type !==
+          "CallExpression"
+      ) {
+        return null;
+      }
+      call = relevantExpression.expression.right.expressions[0].right;
+    } else if (
+      relevantExpression?.type === "IfStatement" &&
+      relevantExpression.consequent.type === "BlockStatement"
+    ) {
+      for (const n of relevantExpression.consequent.body) {
+        if (!matchesStructure(n, nsigExpression)) {
+          continue;
+        }
+        if (
+          n.type !== "VariableDeclaration" ||
+          n.declarations[0].init?.type !== "CallExpression"
+        ) {
+          continue;
+        }
+        call = n.declarations[0].init;
+        break;
+      }
+    }
+    return call;
+  };
+  
+  let call: ESTree.CallExpression | null = null;
+  
+  if (
+    node.type === "ExpressionStatement" &&
     node.expression.type === "AssignmentExpression" &&
-    node.expression.right.type === "FunctionExpression") {
-    block = node.expression.right.body;
+    node.expression.right.type === "FunctionExpression"
+  ) {
+    call = checkBlock(node.expression.right.body);
   } else if (node.type === "VariableDeclaration") {
+    // Check ALL 3-param functions in the declaration, not just the first one
     for (const decl of node.declarations) {
       if (
         decl.type === "VariableDeclarator" &&
         decl.init?.type === "FunctionExpression" &&
         decl.init?.params.length === 3
       ) {
-        block = decl.init.body;
-        break;
+        call = checkBlock(decl.init.body);
+        if (call !== null) {
+          break; // Found a match, stop searching
+        }
       }
     }
   } else if (node.type === "FunctionDeclaration") {
-    block = node.body;
+    call = checkBlock(node.body);
   } else {
     return null;
   }
-  const relevantExpression = block?.body.at(-2);
-  if (!matchesStructure(relevantExpression!, logicalExpression)) {
-    return null;
-  }
-  if (
-    relevantExpression?.type !== "ExpressionStatement" ||
-    relevantExpression.expression.type !== "LogicalExpression" ||
-    relevantExpression.expression.right.type !== "SequenceExpression" ||
-    relevantExpression.expression.right.expressions[0].type !==
-      "AssignmentExpression"
-  ) {
-    return null;
-  }
-  const call = relevantExpression.expression.right.expressions[0].right;
-  if (call.type !== "CallExpression" || call.callee.type !== "Identifier") {
+  
+  if (call === null) {
     return null;
   }
   // TODO: verify identifiers here

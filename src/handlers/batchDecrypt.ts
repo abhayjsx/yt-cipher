@@ -1,7 +1,8 @@
 import type { RequestContext, BatchDecryptRequest } from "../types.ts";
 import { createApiError, formatLogMessage } from "../utils.ts";
+import { getSolvers } from "../solver.ts";
 
-export function handleBatchDecrypt(ctx: RequestContext): Response {
+export async function handleBatchDecrypt(ctx: RequestContext): Promise<Response> {
     const { body, requestId, startTime } = ctx;
     
     try {
@@ -60,13 +61,46 @@ export function handleBatchDecrypt(ctx: RequestContext): Response {
             signatureCount: batchRequest.signatures.length
         }));
 
-        // Process each signature (simplified implementation)
+        // Process each signature
         const results = [];
         for (const sig of batchRequest.signatures) {
             try {
-                // Simulate decryption process
-                const decryptedSignature = `decrypted_${sig.encrypted_signature}`;
-                const decryptedNSig = `decrypted_${sig.n_param}`;
+                const solvers = await getSolvers(sig.player_url);
+                
+                if (!solvers) {
+                    results.push({
+                        encrypted_signature: sig.encrypted_signature,
+                        n_param: sig.n_param,
+                        player_url: sig.player_url,
+                        success: false,
+                        error: 'Failed to generate solvers from player script'
+                    });
+                    continue;
+                }
+                
+                let decryptedSignature = '';
+                if (sig.encrypted_signature && solvers.sig) {
+                    try {
+                        decryptedSignature = solvers.sig(sig.encrypted_signature);
+                    } catch (error) {
+                        console.error(formatLogMessage('error', 'Signature decryption failed in batch', {
+                            requestId,
+                            error: error instanceof Error ? error.message : 'Unknown error'
+                        }));
+                    }
+                }
+                
+                let decryptedNSig = '';
+                if (sig.n_param && solvers.n) {
+                    try {
+                        decryptedNSig = solvers.n(sig.n_param);
+                    } catch (error) {
+                        console.error(formatLogMessage('error', 'N parameter decryption failed in batch', {
+                            requestId,
+                            error: error instanceof Error ? error.message : 'Unknown error'
+                        }));
+                    }
+                }
                 
                 results.push({
                     encrypted_signature: sig.encrypted_signature,
